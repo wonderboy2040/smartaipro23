@@ -261,7 +261,7 @@ export function readContext(rawCandles) {
         : (e9 <= e20 && e20 <= e50) || (last.close < e9 && e9 <= e20 && (stDir === -1 || last.close < e50 || (macdSlope <= 0 && (r == null || r <= 50)))) ? -1
         : 0)
       : 0;
-  const macdDir = macdHist == null ? 0
+  const _macdDir = macdHist == null ? 0
     : (macdHist > 0 && macdSlope < 0 && e9 != null && last.close < e9) ? -1
     : (macdHist < 0 && macdSlope > 0 && e9 != null && last.close > e9) ? 1
     : (macdHist > 0 ? 1 : -1);
@@ -724,7 +724,7 @@ export function buildPlanFromCandles(p = {}) {
   const worldConfluencePct = Math.round(((worldCtx?.confluencePct ?? 60) * 0.55) + ((worldTrig?.confluencePct ?? 60) * 0.45));
   const trapVeto = Boolean(worldTrig?.trapVeto || worldCtx?.trapVeto);
   const zoneWallVeto = Boolean(worldTrig?.zoneWallVeto || worldCtx?.zoneWallVeto);
-  const ctxEmaRibbonDir = worldCtx?.indicators?.find(x => x.id === 'emaRibbon')?.dir ?? dir;
+  const _ctxEmaRibbonDir = worldCtx?.indicators?.find(x => x.id === 'emaRibbon')?.dir ?? dir;
   const isRealPlanTape = (trig?.lastBar?.time ?? 0) >= 1_750_000_000_000 && ctx.rsi != null && ctx.rsi >= 15 && ctx.rsi <= 85 && ((worldCtx?.priceAction?.upBars ?? 10) <= 17 && (worldCtx?.priceAction?.downBars ?? 10) <= 17);
   const ctxSupertrendEmaConflict = isRealPlanTape && (
     (side === 'LONG' && ctx.supertrend === 'down')

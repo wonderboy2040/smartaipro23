@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { fuseDualTf } from '../server/ai/mtfDualBoard.js';
 import {
@@ -310,5 +312,78 @@ describe('P0 direction conflict guards (fuseDualTf + Phase 0–3 Direction Accur
     expect(card.alignedBucket.t1HitPct).toBe(100);
     expect(card.conflictBucket.n).toBe(1);
     expect(card.conflictBucket.slFirstPct).toBe(100);
+  });
+
+  it('P2-4: mtfAutoTick automatically calls releaseDirectionLock when an open trade closes so opposite side unlocks after cooldown', async () => {
+    __resetMtfAutoForTests();
+    setMtfAutoEnabled(true);
+    updateMtfAutoConfig({ markets: ['CRYPTO'], executionMode: 'paper', liveExecution: false, minScore: 75 });
+    const t0 = 1_700_000_000_000;
+
+    let paperOpen = true;
+    const validLongRow = {
+      ok: true,
+      symbol: 'SOL',
+      market: 'CRYPTO',
+      mode: 'INTRADAY',
+      holdMin: 45,
+      side: 'LONG',
+      dir: 1,
+      superScore: 86,
+      tier: 'ELITE',
+      directionVerified: true,
+      triggerFired: true,
+      dualAligned: true,
+      tfFit: 'GOOD',
+      autoEligible: true,
+      autoBlockers: [],
+      plan: { entry: 100, stopLoss: 98, t1: 103, t2: 106, netRR: { t1: 1.4, t2: 2.8 } },
+    };
+
+    const tickOpen = await mtfAutoTick({
+      now: t0,
+      boards: { CRYPTO: { ok: true, rows: [validLongRow] } },
+      paper: {
+        getPaperSummary: () => ({ open: [], closedToday: [] }),
+        openPaperTrade: () => ({ ok: true, trade: { id: 'p-sol-1' } }),
+      },
+      usdtQuotes: { SOL: 100 },
+    });
+    expect(tickOpen.opened.length).toBe(1);
+
+    // While position is active, even 10 hours later opposite SHORT is blocked because active=true
+    expect(checkDirectionLock('SOL', 'SHORT', { now: t0 + 600 * 60_000 }).allowed).toBe(false);
+
+    // Trade closes in paper engine -> next mtfAutoTick reconciles and calls releaseDirectionLock('SOL')
+    paperOpen = false;
+    await mtfAutoTick({
+      now: t0 + 10 * 60_000,
+      boards: { CRYPTO: { ok: true, rows: [] } },
+      paper: {
+        getPaperSummary: () => ({
+          open: paperOpen ? [{ id: 'p-sol-1', symbol: 'SOL' }] : [],
+          closedToday: [{ id: 'p-sol-1', symbol: 'SOL', closeReason: 'T2_HIT', closedAt: t0 + 10 * 60_000, realizedPnl: 25 }],
+        }),
+        openPaperTrade: () => ({ ok: true, trade: { id: 'p-sol-2' } }),
+      },
+      usdtQuotes: { SOL: 106 },
+    });
+
+    // After 4h cooldown from entry, opposite SHORT is now allowed (lock was released on close!)
+    expect(checkDirectionLock('SOL', 'SHORT', { now: t0 + 250 * 60_000 }).allowed).toBe(true);
+  });
+
+  it('P1-5: MTFDualBoardPanel.tsx and mtfDualBoard.js use honest heuristicConfluencePct & pWinCalibrated (no hardcoded 95% winrate)', () => {
+    const panelSrc = fs.readFileSync(path.resolve('src/components/aitrading/MTFDualBoardPanel.tsx'), 'utf8');
+    expect(panelSrc).not.toContain('95% WINRATE TARGET');
+    expect(panelSrc).not.toContain('?? 95;');
+    expect(panelSrc).toContain('heuristicConfluencePct');
+    expect(panelSrc).toContain('pWinCalibrated');
+    expect(panelSrc).toContain('uncalibrated');
+
+    const boardSrc = fs.readFileSync(path.resolve('server/ai/mtfDualBoard.js'), 'utf8');
+    expect(boardSrc).not.toContain('if (dualAligned && !reversalRisk && score >= 80) return 95;');
+    expect(boardSrc).toContain('pWinCalibrated');
+    expect(boardSrc).toContain('heuristicConfluencePct');
   });
 });

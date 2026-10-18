@@ -693,6 +693,7 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
         b.status = 'CLOSED';
         b.closeReason = 'EXCHANGE_POSITION_CLOSED';
         b.closedAt = now;
+        releaseDirectionLock(b.symbol, { now });
         changed = true;
       }
     }
@@ -763,6 +764,7 @@ export async function mtfAutoTick(p = {}) {
       b.closeReason = closedRow?.closeReason || 'PAPER_ENGINE_CLOSED';
       b.closedAt = closedRow?.closedAt || now;
       b.pnl = closedRow?.realizedPnl ?? b.pnl ?? null;
+      releaseDirectionLock(b.symbol, { now });
     }
   }
 
@@ -913,6 +915,7 @@ export async function mtfAutoTick(p = {}) {
           b.closeReason = revEval?.shouldExit ? revEval.stage : (deepEval.exitReason || 'DEEP_MONITOR_PROFIT_BOOK');
           b.closedAt = now;
           b.pnl = r?.trade?.realizedPnl ?? revEval?.netTotalPnl ?? deepEval.grossPnl;
+          releaseDirectionLock(b.symbol, { now });
           out.closed.push({
             symbol: b.symbol,
             market: b.market,
@@ -949,6 +952,7 @@ export async function mtfAutoTick(p = {}) {
         b.closeReason = `TIME_STOP ${b.holdMin}m`;
         b.closedAt = now;
         b.pnl = r.trade?.realizedPnl ?? null;
+        releaseDirectionLock(b.symbol, { now });
         out.closed.push({ symbol: b.symbol, market: b.market, reason: b.closeReason, pnl: b.pnl });
         _logEvent('time-exit', `TIME-STOP ${b.symbol} after ${Math.round(ageMs / 60000)}m (window ${b.holdMin}m) — pnl ${ccyPrefix}${b.pnl ?? '—'}`);
         if (typeof p.notify === 'function') { try { await p.notify(`⏱ MTF AUTO time-stop: ${b.symbol} ${b.side} closed at ${b.holdMin}m window — pnl ${ccyPrefix}${b.pnl ?? '—'}`); } catch { /* non-fatal */ } }
@@ -1544,6 +1548,7 @@ export function recordLiveMtfBoardTrade(item = {}) {
   st.dayCount += 1;
   st.perSymbolLast[sym] = now;
   _persistState();
+  acquireDirectionLock({ symbol: sym, side: rec.side, source: isPaperExec ? 'mtf-paper' : 'mtf-live', now });
   _logEvent(
     isPaperExec ? 'paper-entry' : 'live-entry',
     `${execMode} ORDER REGISTERED IN DEEP MONITOR: ${sym} ${rec.side} @ ${entry} · SL ${sl} · T1 ${t1} · T2 ${t2} · ${leverage}x (${w95.walletDeployPct}% Wallet ₹${w95.deployedWalletINR})`

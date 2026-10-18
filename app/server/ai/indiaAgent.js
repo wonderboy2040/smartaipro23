@@ -41,7 +41,7 @@ import { isNseOpen, fetchTVIndiaBatch } from './data.js';
 import { dhanConnected, dhanPlaceOrder, dhanCancelOrder } from './dhan.js';
 import { loadConfig, loadJournal, saveJournal, withJournalLock, pushEntry, todayIST } from './coindcxOrders.js';
 import { executeIndiaSignal, closeIndiaPosition, istHM, IST_SQUAREOFF, IST_ENTRY_LAST, IST_ENTRY_FIRST } from './indiaOrders.js';
-import { acquireDirectionLock, checkDirectionLock } from './directionLock.js';
+import { acquireDirectionLock, releaseDirectionLock, checkDirectionLock } from './directionLock.js';
 // v10.15 GAP 3: the Dhan L2 read for the patient pullback level.
 import { readDepth } from './orderFlowDepth.js';
 // v10.2 parity: V2 model flag exposure in the status view
@@ -475,6 +475,7 @@ async function _tick(deps, sendTelegram) {
       const out = await closeIndiaPosition(p.id, { reason: 'EOD-SQUARE-OFF 15:15 IST (agent)' })
         .catch(e => ({ ok: false, error: String(e?.message || e) }));
       if (out?.ok) {
+        releaseDirectionLock(p.symbol);
         closed++;
         const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
         log('exit', `EOD-SQUARE-OFF ${p.symbol} — intraday discipline: position ₹${r2(totalPnl)} pe cut (booked legs included)`);
@@ -537,6 +538,7 @@ async function _tick(deps, sendTelegram) {
         const out = await closeIndiaPosition(p.id, { reason: `CONVICTION-FLIP: ensemble flipped ${c.side} (score ${c.currentScore}, entry ${Number.isFinite(entryScore) ? entryScore : '?'}) — thesis invalidated, stop se PEHLE bahar` })
           .catch(e => ({ ok: false, error: String(e?.message || e) }));
         if (out?.ok) {
+          releaseDirectionLock(p.symbol);
           const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
           convictionClosures.push({ symbol: p.symbol, pnlINR: totalPnl, score: c.currentScore });
           convictionExited.add(p.id);
@@ -602,6 +604,7 @@ async function _tick(deps, sendTelegram) {
       const out = await closeIndiaPosition(p.id, { reason: `TIME-EXIT after ${Math.round(ageMin)}m${holdMin !== cfg.maxHoldMin ? ` (dynamic window ${holdMin}m — ATR-adaptive)` : ''}` })
         .catch(e => ({ ok: false, error: String(e?.message || e) }));
       if (out?.ok) {
+        releaseDirectionLock(p.symbol);
         timeExited.add(p.id);
         const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
         log('exit', `TIME-EXIT ${p.symbol} after ${Math.round(ageMin)}m (window ${holdMin}m) — pnl ₹${r2(totalPnl)}`);
@@ -639,6 +642,7 @@ async function _tick(deps, sendTelegram) {
     const out = await closeIndiaPosition(p.id, { reason: `TREND-FLIP: board flipped ${flipped.side} (AI ${signalOf(flipped) || flipped.confidence}%)` })
       .catch(e => ({ ok: false, error: String(e?.message || e) }));
     if (out?.ok) {
+      releaseDirectionLock(p.symbol);
       _state.lastEntryAt = Date.now(); // the flip side re-enters only after cooldown
       const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
       log('exit', `TREND-FLIP EXIT ${p.symbol} — board flipped ${flipped.side} (AI ${signalOf(flipped) || flipped.confidence}%) → cut at ₹${r2(totalPnl)} total`);
@@ -917,6 +921,7 @@ async function managePartialTp(openAgent, cfg, sendTelegram) {
         // too small to split — honest full exit at T1
         const out = await closeIndiaPosition(p.id, { reason: `T1 FULL-exit (${p.qty} share — split possible nahi)` }).catch(e => ({ ok: false, error: String(e?.message || e) }));
         if (out?.ok) {
+          releaseDirectionLock(p.symbol);
           log('exit', `T1 FULL-EXIT ${p.symbol} — position ${p.qty} share thi, split ke liye chhoti; runner nahi bacha`);
           if (_state.entryMeta) delete _state.entryMeta[p.symbol];
         }
@@ -942,6 +947,7 @@ async function managePartialTp(openAgent, cfg, sendTelegram) {
       if (legQty >= p.qty) {
         const out = await closeIndiaPosition(p.id, { reason: `T2 FULL-exit (${p.qty} share — runner ke liye kuch nahi bacha)` }).catch(e => ({ ok: false, error: String(e?.message || e) }));
         if (out?.ok) {
+          releaseDirectionLock(p.symbol);
           log('exit', `T2 FULL-EXIT ${p.symbol} — runner ${p.qty} share hi bacha tha`);
           if (_state.entryMeta) delete _state.entryMeta[p.symbol];
         }

@@ -38,7 +38,7 @@
 // hon. Data na mile → row `unavailable` (board se chup-chaap gayab
 // nahi hota, honest reason ke saath rehta hai).
 // ============================================================
-import { buildMTFSnapshot, mtfWire6Payload, rawTfCandles, rawTfCandlesUsdt } from './mtf.js';
+import { mtfWire6Payload, rawTfCandles, rawTfCandlesUsdt } from './mtf.js';
 import { superTier, SUPER_TIERS } from './superIntel.js';
 import { buildPlanFromCandles, PLAN_MODES } from './tradePlanner.js';
 import { ollamaStatus, evaluateMtfRowWithOllamaTrio, getOllamaTrioModels } from './llmSentinel.js';
@@ -259,20 +259,20 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   if (cap != null && score > cap) score = cap;
   const tier = superTier(score);
 
-  // v21.22.0 95% Win-Rate Calibration + v21.23.0 Honest Confluence & Ledger-Calibrated P(win)
+  // v21.23.0 Honest Confluence & Ledger-Calibrated P(win) (P1-1: no hardcoded 95/92 if-else)
+  const heuristicConfluencePct = Number(
+    plan?.heuristicConfluencePct
+    ?? worldInd?.confluencePct
+    ?? Math.round((worldAligned8Count / 8) * 100),
+  );
+  const pWinCalibrated = (wp && wp.calibrated && Number.isFinite(Number(wp.pWin))) ? Number(wp.pWin) : null;
   const winRatePct = (() => {
     if (trapVeto || zoneWallVeto || boardOpposes || svaOpposes || councilHardNo || lockOpposes) {
       return Math.min(62, Math.max(48, Math.round(45 + score * 0.25)));
     }
-    if (worldInd?.estimatedWinRatePct && dualAligned && !reversalRisk) {
-      return Math.min(96, Math.max(worldInd.estimatedWinRatePct, score >= 82 ? 95 : score >= 75 ? 92 : 85));
-    }
-    if (dualAligned && !reversalRisk && score >= 80) return 95;
-    if (dualAligned && !reversalRisk && score >= 75) return 92;
-    return Math.min(90, Math.max(52, Math.round(50 + score * 0.44)));
+    if (pWinCalibrated != null) return Math.round(pWinCalibrated);
+    return Math.round(clamp(heuristicConfluencePct, 40, 96));
   })();
-  const heuristicConfluencePct = Number(plan?.heuristicConfluencePct ?? worldInd?.confluencePct ?? Math.round((worldAligned8Count / 8) * 100));
-  const pWinCalibrated = (wp && wp.calibrated && Number.isFinite(Number(wp.pWin))) ? Number(wp.pWin) : null;
 
   const ollamaTrio = evaluateMtfRowWithOllamaTrio({
     symbol,
@@ -771,9 +771,12 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
   }
   const directionScorecard = computeMtfDirectionScorecard({ windowDays: 30, now });
 
-  const avgWinRatePct = trimmed.length
-    ? Math.round(trimmed.reduce((s, r) => s + (Number(r.winRatePct) || 88), 0) / trimmed.length)
-    : 92;
+  const avgConfluencePct = trimmed.length
+    ? Math.round(trimmed.reduce((s, r) => s + (Number(r.heuristicConfluencePct ?? r.winRatePct) || 75), 0) / trimmed.length)
+    : null;
+  const avgWinRatePct = directionScorecard?.calibrated && directionScorecard?.directionHitRate != null
+    ? Math.round(directionScorecard.directionHitRate)
+    : avgConfluencePct;
   const payload = {
     ok: true, market: mkt, mode: modeId, modeLabel: mode0.label,
     quoteCcy: isUsdtPerpDesk ? 'USDT' : isGlobalEqDesk ? 'USD' : 'INR',
@@ -802,7 +805,8 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
         '7. Supply & Demand Institutional Zones',
         '8. Price Action (HH-HL / Candle Patterns / CLV)',
       ],
-      targetWinRatePct: 95,
+      calibrated: Boolean(directionScorecard?.calibrated),
+      avgConfluencePct,
       avgWinRatePct,
     },
     ollamaTrio: getOllamaTrioModels(),

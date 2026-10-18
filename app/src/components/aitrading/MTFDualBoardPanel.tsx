@@ -399,7 +399,9 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
               {ccyTag}{isUsdBoard && board?.fx ? ` · ₹${fmt(board.fx, 1)}/USDT` : ''} · ⚡ 24×7 DIRECT LIVE
             </span>
             <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-emerald-500/45 bg-emerald-500/15 text-emerald-200" title="8 Institutional Top Indicators Integrated: 1. SMC (BOS/CHoCH/OB) · 2. Liquidity Sweep/Trap · 3. Volume Profile (POC/VAH/VAL) · 4. Fair Value Gap (FVG) · 5. ICT (OTE/MSS) · 6. EMA Ribbon · 7. Supply & Demand Zones · 8. Price Action">
-              🏆 PURE 8 INSTITUTIONAL TOP INDICATORS · {board?.worldIndicatorsInfo?.avgWinRatePct ?? 95}% WINRATE TARGET
+              🏆 PURE 8 INSTITUTIONAL TOP INDICATORS · {board?.directionScorecard?.calibrated && board?.directionScorecard?.directionHitRate != null
+                ? `${board.directionScorecard.directionHitRate}% CALIBRATED HIT-RATE`
+                : `${board?.worldIndicatorsInfo?.avgConfluencePct ?? board?.worldIndicatorsInfo?.avgWinRatePct ?? '—'}% CONFLUENCE (${board?.directionScorecard?.calibrated ? 'calibrated' : 'uncalibrated'})`}
             </span>
             <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-teal-500/45 bg-teal-500/15 text-teal-200" title="1. SMC · 2. Liquidity Sweep/Trap · 3. Volume Profile · 4. Fair Value Gap · 5. ICT · 6. EMA · 7. Supply & Demand · 8. Price Action">
               🎯 SMC · LIQ-SWEEP · VOL-PROFILE · FVG · ICT · EMA · SUPPLY/DEMAND · PRICE-ACTION
@@ -673,9 +675,10 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                 : r.market === 'INDIA'
                   ? { label: '🇮🇳 NSE INTRADAY', cls: 'bg-emerald-500/15 text-emerald-200 border-emerald-400/40' }
                   : { label: '⚡ CRYPTO PERP', cls: 'bg-violet-500/15 text-violet-200 border-violet-400/40' };
-            const winRateShown = r.winRatePct ?? r.worldIndicators?.estimatedWinRatePct ?? 95;
-            const worldAligned = r.worldIndicators?.alignedCount ?? 9;
+            const worldAligned = r.worldIndicators?.alignedCount ?? 8;
             const inst8Aligned = r.worldIndicators?.aligned8Count ?? Math.min(8, worldAligned);
+            const confluencePct = r.heuristicConfluencePct ?? r.worldIndicators?.confluencePct ?? Math.round((inst8Aligned / 8) * 100);
+            const pWinCal = r.pWinCalibrated ?? (wp?.calibrated ? wp.pWin : null);
             const inst8List = r.worldIndicators?.institutional8 || [];
             const isPakka = Boolean(r.directionVerified ?? r.worldIndicators?.directionVerified);
             const oppBoardSide = r.boardSide || r.signals?.board?.side || null;
@@ -722,8 +725,8 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                           🛑 POST-PEAK TRAP{r.trigger?.rangePct != null ? ` (${fmt(r.trigger.rangePct, 0)}% Range)` : ''}
                         </span>
                       )}
-                      <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-emerald-500/20 text-emerald-200 border border-emerald-500/50" title="8 Higher-Win-Rate Institutional Top Indicators Confluence (SMC, Liquidity Sweep/Trap, Volume Profile, FVG, ICT, EMA, Supply & Demand, Price Action) & Calibrated Win-Rate">
-                        🏆 {inst8Aligned}/8 Top Institutional Ind · {winRateShown}% Winrate
+                      <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-emerald-500/20 text-emerald-200 border border-emerald-500/50" title="8 Institutional Top Indicators Confluence (SMC, Liquidity Sweep/Trap, Volume Profile, FVG, ICT, EMA, Supply & Demand, Price Action) & Ledger-Calibrated P(win)">
+                        🏆 {inst8Aligned}/8 Top Institutional Ind · {confluencePct}% Confluence · {pWinCal != null ? `P(win) ${pWinCal}%` : 'uncalibrated'}
                       </span>
                       {r.earlyIgnition && <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-amber-500/20 text-amber-200 border border-amber-500/50" title="Ultra-Fast Early Trend Ignition — fresh EMA5/9/20 + MACD velocity">⚡ EARLY IGNITION</span>}
                       {r.counterTrend && <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-red-500/15 text-red-300 border border-red-500/40">⚠ COUNTER</span>}
@@ -785,7 +788,7 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                   {wp && (
                     <span className={`px-1.5 py-0.5 rounded border font-black ${wp.verdict === 'EDGE' ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : wp.verdict === 'NO-EDGE' ? 'text-red-300 border-red-500/40 bg-red-500/10' : 'text-amber-300 border-amber-500/40'}`}
                       title={`P(win) ${wp.pWin}% · EV ${fmt(wp.evR, 2)}R ${wp.calibrated ? '· ledger-calibrated' : '· uncalibrated'}`}>
-                      P(WIN) {wp.pWin}% · {wp.verdict}
+                      P(WIN) {wp.calibrated && wp.pWin != null ? `${wp.pWin}% · ${wp.verdict}` : `uncalibrated · ${wp.verdict || 'EST'}`}
                     </span>
                   )}
                   {r.grade && <span className="px-1.5 py-0.5 rounded border border-slate-500/30 text-slate-400">grade {r.grade}</span>}
@@ -799,7 +802,7 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                   )}
                   {r.ollamaTrio && (
                     <span className="px-1.5 py-0.5 rounded border border-violet-500/45 bg-violet-500/15 text-violet-200 font-black" title={r.ollamaTrio.liveNote || '3-Model Local Ollama AI Ensemble'}>
-                      🧠 {r.ollamaTrio.verdict} ({r.ollamaTrio.latencyMs ?? 12}ms)
+                      🧠 {r.ollamaTrio.honestLabel || r.ollamaTrio.verdict}{r.ollamaTrio.latencyMs != null ? ` (${r.ollamaTrio.latencyMs}ms)` : ''}
                     </span>
                   )}
                   {r.aiAgents && (

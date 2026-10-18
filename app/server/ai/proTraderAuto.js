@@ -40,7 +40,7 @@ import { hardGateCheck, currentLossStreak, drawdownFromPeakPct as _drawdownFromP
 import { eventGuardCheck } from './eventGuard.js';
 import { estimateRoundTripCost } from './tradingCosts.js';
 import { walletLeverageForEquityINR, feeBreakevenFloor } from '../exec/sizing.js';
-import { acquireDirectionLock, checkDirectionLock } from './directionLock.js';
+import { acquireDirectionLock, releaseDirectionLock, checkDirectionLock } from './directionLock.js';
 
 export const PROTRADER_TICK_SEC = 30;
 const CFG_FILE = 'protrader-auto-config.json';
@@ -916,6 +916,12 @@ async function _tryEntry(deps, cfg, sig, sendTelegram) {
       _log('entry', `ORDER PLACED ${sig.symbol} ${sig.side} @ ${sig.plan.entry} (browser) — fill verify agla tick`);
     }
     _saveTrade(trade);
+    acquireDirectionLock({
+      symbol: sig.symbol,
+      side: sig.side,
+      source: 'protrader-auto',
+      cooldownMin: cfg.cooldownMin || 240,
+    });
     _log('entry', `NEW TRADE ${sig.symbol} ${sig.side} | AI ${g.score.ai} conf ${g.score.conf} verified ${g.score.verified} | entry ${sig.plan.entry} SL ${sig.plan.stopLoss} | mode ${cfg.mode}`);
     return { ok: true, trade };
   } finally { _s.busyPlacing = false; }
@@ -1124,6 +1130,7 @@ async function _monitorPositions(deps, cfg, sendTelegram) {
           status: 'UNFILLED',
           closed: { ts: Date.now(), reason: ttlWhy, exitPrice: null, pnlINR: null },
         });
+        releaseDirectionLock(t.symbol, { clearCooldown: true });
         _log('warn', `PLACED EXPIRED ${t.symbol} — ${ttlWhy}. Agar broker pe resting order hai to manually cancel karo.`);
         try { sendTelegram?.(`[PRO TRADER AUTO] ⚠️ ${t.symbol} ${t.side} limit order FILL verify nahi ho paya — slot free kiya. Broker pe resting order hai to manually cancel karo.`); } catch { /* best-effort */ }
         continue;
@@ -1313,6 +1320,7 @@ async function _closeTrade(t, reason, cfg, sendTelegram, ltpOverride) {
       status: 'CLOSED',
       closed: { ts: Date.now(), reason, exitPrice, pnlINR: totalPnl, ...(booked !== 0 ? { bookedPnlINR: booked, finalLegPnlINR: pnl } : {}), closeDetail: closeDetail ? { ok: true, steps: closeDetail.steps || closeDetail.error || null } : null, verify },
     });
+    releaseDirectionLock(t.symbol);
     _log('exit', `CLOSE ${t.symbol} ${t.side} @ ~${exitPrice} — ${reason} | PnL ~${totalPnl ?? '?'} INR${booked !== 0 ? ` (final ${pnl ?? '?'} + TP1-booked ${booked})` : ''}${verify === 'unread' ? ' · positions read nahi hua — verify nahi' : ''}`);
     try { sendTelegram?.(`[PRO TRADER AUTO] CLOSE ${t.symbol} ${t.side} @ ~${exitPrice} — ${reason} — PnL ~${totalPnl ?? '?'} INR${booked !== 0 ? ` (incl. TP1-booked ₹${booked})` : ''}`); } catch { /* reconnect probe best-effort */ }
   } else {

@@ -19,6 +19,7 @@
 import { getSignals, getDeepSignal, buildRegime } from './signals.js';
 import { walletSnapshot, fetchUsdInr } from './futures.js';
 import { getPositionsWithPnl, loadConfig as _loadConfig, getRiskState, loadJournal, todayIST } from './coindcxOrders.js';
+import { acquireDirectionLock, releaseDirectionLock, checkDirectionLock, getDirectionLocks } from './directionLock.js';
 import { trustReport, governance } from './trust.js';
 import { maxSaneLeverage } from './ensemble.js';
 import { loadAgentConfig, agentStatus } from './agent.js';
@@ -372,21 +373,26 @@ async function executeCryptoTool(name, args, deps) {
           const b = await getSignals(m, deps, { limit: 8 }).catch(() => null);
           const label = m === 'CRYPTO' ? 'SPOT' : m === 'FUTURES' ? 'FUTURES' : 'GLOBAL';
           if (!b?.ok) { out[label] = { error: 'board unavailable (feeds unreachable — retry in a minute)' }; continue; }
-          out[label] = (b.signals || []).slice(0, 5).map(s => ({
-            symbol: s.symbol, side: s.side, grade: s.grade, confidence: s.confidence,
-            aiScore: s.superIntel?.aiScore ?? null, ltp: s.ltp, changePct: s.changePct,
-            winProb: s.superIntel?.winProb ? {
-              pWin: s.superIntel.winProb.pWin, pNeed: s.superIntel.winProb.pNeed,
-              edgePts: s.superIntel.winProb.edgePts, evRealisticR: s.superIntel.winProb.evRealisticR,
-              verdict: s.superIntel.winProb.verdict,
-            } : null,
-            voters: s.voters ?? s.participating ?? null, totalModels: s.totalModels ?? null,
-            agreement: s.agreement, plan: s.plan ? {
-              entry: s.plan.entry, stopLoss: s.plan.stopLoss,
-              target1: s.plan.target1, target2: s.plan.target2, riskPct: s.plan.riskPct, rewardRisk: s.plan.rewardRisk,
-            } : null,
-            aiNote: s.aiNote?.note ?? null,
-          }));
+          out[label] = (b.signals || []).slice(0, 5).map(s => {
+            const dirLock = checkDirectionLock(s.symbol, s.side);
+            return {
+              symbol: s.symbol, side: s.side, grade: s.grade, confidence: s.confidence,
+              aiScore: s.superIntel?.aiScore ?? null, ltp: s.ltp, changePct: s.changePct,
+              directionLockBlocked: !dirLock.allowed,
+              directionLockReason: dirLock.allowed ? null : dirLock.reason,
+              winProb: s.superIntel?.winProb ? {
+                pWin: s.superIntel.winProb.pWin, pNeed: s.superIntel.winProb.pNeed,
+                edgePts: s.superIntel.winProb.edgePts, evRealisticR: s.superIntel.winProb.evRealisticR,
+                verdict: s.superIntel.winProb.verdict,
+              } : null,
+              voters: s.voters ?? s.participating ?? null, totalModels: s.totalModels ?? null,
+              agreement: s.agreement, plan: s.plan ? {
+                entry: s.plan.entry, stopLoss: s.plan.stopLoss,
+                target1: s.plan.target1, target2: s.plan.target2, riskPct: s.plan.riskPct, rewardRisk: s.plan.rewardRisk,
+              } : null,
+              aiNote: s.aiNote?.note ?? null,
+            };
+          });
         }
         return out;
       }
@@ -397,9 +403,12 @@ async function executeCryptoTool(name, args, deps) {
         const d = await getDeepSignal(symbol, 'GLOBALFUTURES', deps, {}).catch(() => null);
         if (!d?.ok) return { error: `No data for ${symbol} — check the ticker (AAPL/MSFT/GOOGL/AMZN/NVDA/TSLA/META/SPACEX) or the Yahoo feed is down.` };
         const s = d.signal || d;
+        const dirLock = checkDirectionLock(symbol, s.side);
         return {
           symbol, market: 'GLOBALFUTURES (SIM desk — signals real, execution paper/notify only)',
           side: s.side, grade: s.grade, confidence: s.confidence, agreement: s.agreement,
+          directionLockBlocked: !dirLock.allowed,
+          directionLockReason: dirLock.allowed ? null : dirLock.reason,
           voters: s.voters ?? s.participating ?? null, totalModels: s.totalModels ?? null,
           ltp: s.ltp, changePct: s.changePct,
           aiScore: s.superIntel?.aiScore ?? null, tier: s.superIntel?.tier ?? null,
@@ -420,9 +429,12 @@ async function executeCryptoTool(name, args, deps) {
         const d = await getDeepSignal(symbol, market, deps, {}).catch(() => null);
         if (!d?.ok) return { error: `No data for ${symbol} — check the symbol (BTC/ETH/SOL...) or the feed is down.` };
         const s = d.signal || d;
+        const dirLock = checkDirectionLock(symbol, s.side);
         return {
           symbol, market,
           side: s.side, grade: s.grade, confidence: s.confidence, agreement: s.agreement,
+          directionLockBlocked: !dirLock.allowed,
+          directionLockReason: dirLock.allowed ? null : dirLock.reason,
           voters: s.voters ?? s.participating ?? null, totalModels: s.totalModels ?? null,
           ltp: s.ltp, changePct: s.changePct,
           aiScore: s.superIntel?.aiScore ?? null, tier: s.superIntel?.tier ?? null,
@@ -477,6 +489,18 @@ async function executeCryptoTool(name, args, deps) {
       case 'get_open_positions': {
         const p = await getPositionsWithPnl().catch(() => null);
         if (!p) return { error: 'positions unavailable (CoinDCX API down?)' };
+        const openPairs = new Set();
+        for (const x of p.positions || []) {
+          if (x?.pair && (x.side === 'LONG' || x.side === 'SHORT')) {
+            openPairs.add(x.pair);
+            acquireDirectionLock({ symbol: x.pair, side: x.side, source: x.source || 'crypto-agent' });
+          }
+        }
+        for (const l of getDirectionLocks()) {
+          if (l.active && l.source === 'crypto-agent' && !openPairs.has(l.symbol)) {
+            releaseDirectionLock(l.symbol);
+          }
+        }
         return {
           count: (p.positions || []).length,
           positions: (p.positions || []).map(x => ({

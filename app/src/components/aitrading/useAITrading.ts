@@ -959,6 +959,9 @@ export interface MtfDualRow {
   ollamaTrio?: {
     optimized?: boolean;
     reachable?: boolean;
+    ruleBasedGuard?: boolean;
+    honestLabel?: string;
+    liveVerdict?: string | null;
     models?: string[];
     fastModel?: string;
     deepModel?: string;
@@ -968,7 +971,7 @@ export interface MtfDualRow {
     voteScore?: number;
     verdict?: string;
     scoreBoost?: number;
-    latencyMs?: number;
+    latencyMs?: number | null;
     liveNote?: string;
   } | null;
   side: 'LONG' | 'SHORT' | null; dir?: number | null;
@@ -1039,7 +1042,7 @@ export interface MtfDualBoardView {
   topDeepTrendLimit?: number; scannedCount?: number;
   directionScorecard?: MtfDirectionScorecardView | null;
   liveFeed24x7?: { active: boolean; cadenceMs: number; directTickOverlay: number; asOf: number };
-  worldIndicatorsInfo?: { count: number; names: string[]; targetWinRatePct: number; avgWinRatePct: number };
+  worldIndicatorsInfo?: { count: number; names: string[]; calibrated?: boolean; avgConfluencePct?: number | null; targetWinRatePct?: number; avgWinRatePct?: number | null };
   ollamaTrio?: { reachable: boolean; base?: string; fastModel: string; deepModel: string; sentinelModel: string; models: string[]; count: number; keepAlive?: string };
   counts?: { rows: number; overBar: number; eligible: number; strong: number; fired: number; unavailable: number; metalsEligible?: number; equitySimEligible?: number };
   quoteCcy?: 'USDT' | 'USD' | 'INR' | null; fx?: number | null;
@@ -1254,7 +1257,7 @@ export async function openMtfBoardLive(
   }
 }
 
-export async function runMtfAutoTick(): Promise<{ ok: boolean; tick?: { opened: unknown[]; closed: unknown[]; skipped: string[]; candidates: number } } | null> {
+export async function runMtfAutoTick(): Promise<{ ok: boolean; tick?: { opened: Array<{ symbol?: string; side?: string; [k: string]: unknown }>; closed: unknown[]; skipped: string[]; candidates: number } } | null> {
   try {
     const r = await apiFetch(`${getProxyBase()}/api/ai/mtf-auto/run`, { method: 'POST', signal: AbortSignal.timeout(90000) });
     if (!r.ok) return null;

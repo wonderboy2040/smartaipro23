@@ -32,7 +32,7 @@ import { durablePut } from '../mcp/durable.js';
 import { coindcxConnected } from '../mcp/coindcx.js';
 import { getTick } from '../liveFeed.js';
 import { walletLeverageForEquityINR, feeBreakevenFloor } from '../exec/sizing.js';
-import { acquireDirectionLock, checkDirectionLock } from './directionLock.js';
+import { acquireDirectionLock, releaseDirectionLock, checkDirectionLock } from './directionLock.js';
 import { walletSnapshot, executeFuturesSignal, closeFuturesPosition, fetchUsdInr, inrOfUsdt as _inrOfUsdt } from './futures.js';
 import {
   loadConfig, loadJournal, dailyStats as _dailyStats, todayIST,
@@ -1309,6 +1309,7 @@ Ye fix hote hi futures auto-entries phir se chalegi.`);
                 return closePosition(p.id).catch(e => ({ ok: false, error: String(e?.message || e) }));
               })();
         if (out?.ok) {
+          releaseDirectionLock(p.pair);
           const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
           convictionClosures.push({ pair: p.pair, pnlINR: totalPnl, score: c.currentScore });
           convictionExited.add(p.id);
@@ -1396,6 +1397,7 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
               return closePosition(p.id).catch(e => ({ ok: false, error: String(e?.message || e) }));
             })();
       if (out?.ok) {
+        releaseDirectionLock(p.pair);
         timeExited.add(p.id);
         // v7.0.2: honest TOTAL pnl — booked partial legs + the final leg
         // (p.pnlINR alone is only the remaining runner's leg).
@@ -1486,6 +1488,7 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
             return closePosition(p.id).catch(e => ({ ok: false, error: String(e?.message || e) }));
           })();
     if (out?.ok) {
+      releaseDirectionLock(p.pair);
       _state.lastEntryAt = Date.now(); // the flip side re-enters only after cooldown
       const totalPnl = (out.position?.pnlINR ?? 0) + (out.position?.bookedPnlINR ?? 0);
       log('exit', `TREND-FLIP EXIT${manual ? ' (manual-held, close-mode)' : ''} ${p.pair} — board flipped ${flipped.side} (AI ${signalOf(flipped) || flipped.confidence}%) → cut at ₹${r2(totalPnl)} total`);
