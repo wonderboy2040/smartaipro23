@@ -46,6 +46,7 @@ import { isNseMarketOpen, freshEntriesAllowedFor, dayKeyFor, istDayKey } from '.
 import { dualAutoCandidates } from './mtfDualBoard.js';
 import { SUPER_TIERS } from './superIntel.js';
 import { walletLeverageForEquityINR, feeBreakevenFloor, evaluateFeeAwareReversalExit } from '../exec/sizing.js';
+import { acquireDirectionLock, releaseDirectionLock, checkDirectionLock, __resetDirectionLocksForTests } from './directionLock.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
@@ -1048,6 +1049,10 @@ export async function mtfAutoTick(p = {}) {
         (r.side === 'LONG' || r.side === 'SHORT')
         && r.directionVerified === true
         && r.triggerFired === true
+        // P0-3 FIX: fallback MUST NOT bypass quality blockers (cost≥0.5R, netRR<0, grade C,
+        // winProb NO-EDGE, direction conflict, SVA FLIP, AI council hard disagree).
+        && (r.autoBlockers || []).length === 0
+        && !r.boardSideConflict
         && (r.tier === 'ELITE' || r.tier === 'STRONG' || Number(r.superScore) >= 80)
         && !r.reversalRisk
         && !r.trigger?.reversalRisk
@@ -1075,6 +1080,11 @@ export async function mtfAutoTick(p = {}) {
       if (_openLinked().length >= effectiveMaxOpenPositions) break;
       const sym = normalizeLinkSymbol(row.symbol, market);
       if (!sym || openSymbols.has(sym)) { out.skipped.push(`${sym}: already open`); continue; }
+      const dirLock = checkDirectionLock(sym, row.side, { now });
+      if (dirLock && !dirLock.allowed) {
+        out.skipped.push(`${sym}: ${dirLock.reason}`);
+        continue;
+      }
       const entry = Number(row.plan?.entry);
       const sl = Number(row.plan?.stopLoss);
       const t1 = Number(row.plan?.t1);
@@ -1275,6 +1285,7 @@ export async function mtfAutoTick(p = {}) {
       stx.dayCount += 1;
       stx.perSymbolLast[sym] = now;
       _persistState();
+      acquireDirectionLock({ symbol: sym, side: row.side, source: 'mtf-auto', now });
       openSymbols.add(sym);
       out.opened.push(rec);
       openedThisDesk += 1;
@@ -1549,6 +1560,7 @@ export function __resetMtfAutoForTests(seed = null) {
   _cfg = null;
   _state = null;
   _mtfAutoTickInFlight = false;
+  __resetDirectionLocksForTests();
   try { fs.unlinkSync(CFG_FILE()); } catch { /* absent */ }
   try { fs.unlinkSync(STATE_FILE()); } catch { /* absent */ }
   if (seed?.config) { _cfg = _sanitizeCfg({ ...MTF_AUTO_DEFAULTS, ...seed.config, desks: { ...MTF_AUTO_DEFAULTS.desks, ...(seed.config.desks || {}) } }); _save(CFG_FILE(), _cfg); }

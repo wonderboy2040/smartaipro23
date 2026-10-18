@@ -40,6 +40,7 @@ import { hardGateCheck, currentLossStreak, drawdownFromPeakPct as _drawdownFromP
 import { eventGuardCheck } from './eventGuard.js';
 import { estimateRoundTripCost } from './tradingCosts.js';
 import { walletLeverageForEquityINR, feeBreakevenFloor } from '../exec/sizing.js';
+import { acquireDirectionLock, checkDirectionLock } from './directionLock.js';
 
 export const PROTRADER_TICK_SEC = 30;
 const CFG_FILE = 'protrader-auto-config.json';
@@ -332,6 +333,10 @@ export function proTraderGate(sig, cfg = PROTRADER_DEFAULTS) {
   // liye India desk kabhi trade hi nahi kar pata tha. INDIA ke liye gate
   // grade STRONG + plan + side (upar enforce) par chalta hai.
   if (sig?.executable === false && String(sig?.market || '').toUpperCase() !== 'INDIA') reasons.push('not-executable');
+  if (sig?.symbol && (side === 'LONG' || side === 'SHORT')) {
+    const dirLock = checkDirectionLock(sig.symbol, side);
+    if (dirLock && !dirLock.allowed) reasons.push(`direction-lock:${dirLock.lockedSide}`);
+  }
   return { pass: reasons.length === 0, reasons, score: { ai, conf, verified: vScore } };
 }
 

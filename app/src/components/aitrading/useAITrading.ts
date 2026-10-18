@@ -930,8 +930,15 @@ export interface MtfDualRow {
   /** v21.17.0 + v21.22.0: price domain — CRYPTO/METALS rows USDT, EQUITY_SIM rows USD, INDIA rows INR */
   quoteCcy?: 'USDT' | 'USD' | 'INR' | null; priceSrc?: string | null; fx?: number | null; ltpInr?: number | null;
   superScore: number | null; tier: string;
+  scoreBand?: string;
   winRatePct?: number | null;
+  heuristicConfluencePct?: number | null;
+  pWinCalibrated?: number | null;
   directionVerified?: boolean;
+  boardSideConflict?: boolean;
+  boardSide?: 'LONG' | 'SHORT' | string | null;
+  svaConflict?: boolean;
+  councilConflict?: boolean;
   pakkaDirectionLabel?: string | null;
   trapVeto?: boolean;
   zoneWallVeto?: boolean;
@@ -1001,8 +1008,28 @@ export interface MtfDualRow {
     zeroLossRule?: string;
   } | null;
   leverageRule?: { below10k: number; above10k: number; thresholdINR: number; walletDeployPct?: number } | null;
-  signals?: { board?: { aiScore?: number | null; grade?: string | null; confidence?: number | null; winProb?: { verdict?: string | null; pWin?: number | null; evR?: number | null; calibrated?: boolean } | null } | null; mtf6?: { consensus?: string; agreementPct?: number; phase?: string; htfBias?: string | null; ltfTrigger?: string | null; timing?: string | null } | null } | null;
+  signals?: { board?: { side?: 'LONG' | 'SHORT' | string | null; aiScore?: number | null; grade?: string | null; confidence?: number | null; winProb?: { verdict?: string | null; pWin?: number | null; evR?: number | null; calibrated?: boolean } | null } | null; mtf6?: { consensus?: string; agreementPct?: number; phase?: string; htfBias?: string | null; ltfTrigger?: string | null; timing?: string | null } | null } | null;
   asOf?: number;
+}
+
+export interface MtfDirectionScorecardBucket {
+  n: number;
+  directionHitRate: number | null;
+  t1HitPct: number | null;
+  slFirstPct: number | null;
+  wrongWayRate: number | null;
+  avgR: number | null;
+  wilsonLB: number | null;
+}
+
+export interface MtfDirectionScorecardView extends MtfDirectionScorecardBucket {
+  windowDays: number;
+  totalScans: number;
+  resolvedCount: number;
+  pendingCount: number;
+  calibrated: boolean;
+  alignedBucket?: MtfDirectionScorecardBucket;
+  conflictBucket?: MtfDirectionScorecardBucket;
 }
 
 export interface MtfDualBoardView {
@@ -1010,6 +1037,7 @@ export interface MtfDualBoardView {
   market?: string; mode?: TradePlanModeId; modeLabel?: string;
   contextTf?: string; triggerTf?: string; holdMin?: number; minScore?: number;
   topDeepTrendLimit?: number; scannedCount?: number;
+  directionScorecard?: MtfDirectionScorecardView | null;
   liveFeed24x7?: { active: boolean; cadenceMs: number; directTickOverlay: number; asOf: number };
   worldIndicatorsInfo?: { count: number; names: string[]; targetWinRatePct: number; avgWinRatePct: number };
   ollamaTrio?: { reachable: boolean; base?: string; fastModel: string; deepModel: string; sentinelModel: string; models: string[]; count: number; keepAlive?: string };

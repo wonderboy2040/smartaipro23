@@ -615,6 +615,33 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
         )}
       </div>
 
+      {/* ================= PHASE 3.3: 30-DAY MTF DIRECTION SCORECARD STRIP ================= */}
+      {board?.directionScorecard && (
+        <div data-testid="mtf-direction-scorecard" className="mt-2 rounded-xl border border-cyan-500/30 bg-slate-950/80 px-3 py-1.5 flex items-center justify-between flex-wrap gap-2 text-[9px] font-mono">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-black text-cyan-300 uppercase">📊 MTF Direction Scorecard ({board.directionScorecard.windowDays}d):</span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700/70 text-slate-200">
+              Scans: <b>{board.directionScorecard.totalScans}</b> ({board.directionScorecard.resolvedCount} resolved · {board.directionScorecard.pendingCount} live)
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 font-black">
+              Direction Hit: {board.directionScorecard.directionHitRate != null ? `${board.directionScorecard.directionHitRate}%` : 'calibrating…'}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/40 text-cyan-200 font-black">
+              T1 Hit: {board.directionScorecard.t1HitPct != null ? `${board.directionScorecard.t1HitPct}%` : '—'}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-violet-500/15 border border-violet-500/40 text-violet-200">
+              Avg R: {board.directionScorecard.avgR != null ? `${board.directionScorecard.avgR >= 0 ? '+' : ''}${board.directionScorecard.avgR}R` : '—'}
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-rose-200">
+              Wrong-Way: {board.directionScorecard.wrongWayRate != null ? `${board.directionScorecard.wrongWayRate}%` : '0%'}
+            </span>
+          </div>
+          <span className="text-[8px] text-slate-400">
+            {board.directionScorecard.calibrated ? '✓ Ledger-Calibrated (n ≥ 20)' : '⏳ Uncalibrated (<20 resolved scans)'}
+          </span>
+        </div>
+      )}
+
       {/* ================= CARD GRID (Signal-Board parity + Gold/Silver XAU/XAG + Equity Sim) ================= */}
       {boardBusy && !displayedRows.length && <div className="text-[10px] text-slate-400 animate-pulse py-3">Dual-TF board compute ho raha hai…</div>}
       {!boardBusy && !displayedRows.length && (
@@ -651,6 +678,8 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
             const inst8Aligned = r.worldIndicators?.aligned8Count ?? Math.min(8, worldAligned);
             const inst8List = r.worldIndicators?.institutional8 || [];
             const isPakka = Boolean(r.directionVerified ?? r.worldIndicators?.directionVerified);
+            const oppBoardSide = r.boardSide || r.signals?.board?.side || null;
+            const hasBoardConflict = Boolean(r.boardSideConflict || (oppBoardSide && r.side && oppBoardSide !== r.side));
             return (
               <div key={key} data-testid={`mtf-card-${r.symbol}`} className="quantum-panel rounded-2xl p-3 border border-violet-500/15">
                 {/* card header */}
@@ -666,8 +695,21 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                       </span>
                       {isPakka && (r.side === 'LONG' || r.side === 'SHORT') && (
                         <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black border ${long ? 'bg-emerald-500/25 text-emerald-100 border-emerald-400/60' : 'bg-rose-500/25 text-rose-100 border-rose-400/60'}`}
-                          title="Pakka Verified Direction Lock: Deep Context TF + Action Trigger TF + 8 Institutional Indicators Aligned + Zero Trap/Wall Veto">
+                          title="Pakka Verified Direction Lock: Deep Context TF + Action Trigger TF + 8 Institutional Indicators Aligned + Zero Trap/Wall Veto + Cross-Engine Direction Match">
                           🔒 PAKKA {r.side} VERIFIED
+                        </span>
+                      )}
+                      {hasBoardConflict && (
+                        <span data-testid={`mtf-conflict-chip-${r.symbol}`}
+                          className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-red-500/30 text-red-100 border border-red-400/70"
+                          title={`Cross-Engine Direction Conflict: Board Ensemble says ${oppBoardSide} (${r.signals?.board?.aiScore ?? '—'}) while MTF Dual Board says ${r.side} — capped ≤64 & blocked from auto-entry`}>
+                          ⚠ BOARD: {oppBoardSide}{r.signals?.board?.aiScore != null ? ` ${r.signals.board.aiScore}` : ''} vs MTF: {r.side}
+                        </span>
+                      )}
+                      {!isPakka && r.pakkaDirectionLabel?.startsWith('CONFLICT-') && (
+                        <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-red-500/25 text-red-200 border border-red-400/60"
+                          title="Direction Conflict across Board Ensemble / SVA Verifier / AI Council — Auto-Trade blocked">
+                          🛑 {r.pakkaDirectionLabel}
                         </span>
                       )}
                       {r.trapVeto && (
@@ -691,7 +733,7 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                     <div className="mt-0.5 text-[9px] text-slate-500 font-mono">
                       {r.label} · hold {r.holdMin}m · {isRowUsd ? `$ ${fmt(r.ltp ?? p?.entry)} ${r.quoteCcy}` : `₹ ${fmt(r.ltp ?? p?.entry)}`}
                       {r.ltpInr != null && <span className="text-slate-600"> (≈ ₹{fmt(r.ltpInr, 0)})</span>}
-                      {r.signals?.board?.aiScore != null && <span> · board {r.signals.board.aiScore}</span>}
+                      {r.signals?.board?.aiScore != null && <span> · board {r.signals.board.side ? `${r.signals.board.side} ` : ''}{r.signals.board.aiScore}</span>}
                       {r.signals?.mtf6?.agreementPct != null && <span> · MTF6 {r.signals.mtf6.agreementPct}%</span>}
                     </div>
                   </div>

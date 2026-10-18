@@ -44,6 +44,8 @@ import { buildPlanFromCandles, PLAN_MODES } from './tradePlanner.js';
 import { ollamaStatus, evaluateMtfRowWithOllamaTrio, getOllamaTrioModels } from './llmSentinel.js';
 import { feeBreakevenFloor, defaultRoundTripFeePct } from '../exec/sizing.js';
 import { fetchFuturesPrices } from './futures.js';
+import { resolveDirection, checkDirectionLock } from './directionLock.js';
+import { recordMtfBoardScanRow, resolveMtfBoardScanOutcomes, computeMtfDirectionScorecard } from './signalLedger.js';
 
 /** v21.18.0 USER SPEC: sirf 2 dual-timeframe modes on the integrated board:
  *   • INTRADAY : 15m deep (context) + 5m action (trigger)
@@ -153,20 +155,38 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   if (wp && wp.verdict === 'EDGE') { score += 3; drivers.push(`P(win) EDGE (+3) — ${wp.pWin}% win · EV ${wp.evRealisticR ?? wp.evR}R`); }
   else if (wp && wp.verdict === 'NO-EDGE') { score -= 5; drivers.push(`P(win) NO-EDGE (−5) — ${wp.pWin}% win · EV ${wp.evRealisticR ?? wp.evR}R`); }
   // v21.18.0 TOP AI AGENTS + SVA + LOCAL OLLAMA COUNCIL FUSE:
-  const sva = boardSideMatches ? (boardSig?.verify || boardSig?.sva || null) : null;
+  const rawSva = boardSig?.verify || boardSig?.sva || null;
+  const rawSvaAct = String(rawSva?.action || '').toUpperCase();
+  const sva = boardSideMatches ? rawSva : null;
   const svaAct = String(sva?.action || '').toUpperCase();
   if (sva && (svaAct === 'CONFIRM' || (side === 'LONG' && svaAct === 'STRONG_BUY') || (side === 'SHORT' && svaAct === 'STRONG_SELL')) && (!sva.finalCall || String(sva.finalCall).toUpperCase() === side)) {
     score += 2; drivers.push(`SVA 10-check ${svaAct} ${sva.score ? Math.round(sva.score) : ''}% (+2)`);
   } else if (sva && (sva.veto || svaAct === 'AVOID' || svaAct === 'REJECT')) {
     score -= 6; drivers.push('SVA verifier VETO (−6)');
   }
-  const councilV = boardSideMatches ? String(boardSig?.aiCouncil?.verdict || boardSig?.aiConfirm?.verdict || '').toUpperCase() : '';
+  const rawCouncilV = String(boardSig?.aiCouncil?.verdict || boardSig?.aiConfirm?.verdict || '').toUpperCase();
+  const councilV = boardSideMatches ? rawCouncilV : '';
   const councilModel = boardSig?.aiCouncil?.model || boardSig?.aiConfirm?.model || 'local';
   if (councilV && (councilV === side || councilV === 'AGREE' || councilV === 'CONFIRM')) {
     score += 2; drivers.push(`AI Council / Ollama (${councilModel}) CONFIRM (+2)`);
   } else if (councilV === 'AVOID' || councilV === 'DISAGREE' || councilV === 'SKIP') {
     score -= 5; drivers.push(`AI Council / Ollama ${councilV} (−5)`);
   }
+
+  // ---- P0 DIRECTION GUARDS (audit/direction-guards) -------------------------
+  // (a) Board ensemble ne OPPOSITE side bola → MTF side se takrao. Pehle sirf baseScore
+  //     null hota tha, koi blocker nahi → LONG ELITE row board ke SHORT 90 ke saath bhi auto-eligible.
+  const boardSideRaw = String(boardSig?.side || '').toUpperCase();
+  const boardOpposes = (boardSideRaw === 'LONG' || boardSideRaw === 'SHORT')
+    && (side === 'LONG' || side === 'SHORT') && boardSideRaw !== side;
+  // (b) SVA ka FLIP verdict (finalCall = opposite) pehle ignore hota tha.
+  const svaFinal = String(rawSva?.finalCall || '').toUpperCase();
+  const svaOpposes = Boolean(rawSva) && (rawSvaAct === 'FLIP' || ((svaFinal === 'LONG' || svaFinal === 'SHORT') && svaFinal !== side));
+  // (c) AI Council hard-disagree (AVOID/DISAGREE/SKIP) sirf −5 tha, blocker nahi.
+  const councilHardNo = rawCouncilV === 'AVOID' || rawCouncilV === 'DISAGREE' || rawCouncilV === 'SKIP';
+  if (boardOpposes) { score -= 12; cap = cap == null ? 64 : Math.min(cap, 64); gates.push(`board ensemble ${boardSideRaw} bol raha hai, MTF ${side} — direction conflict, capped 64`); }
+  if (svaOpposes)   { score -= 8;  cap = cap == null ? 64 : Math.min(cap, 64); gates.push('SVA verifier FLIP/opposite call — capped 64'); }
+
   const agree = boardSideMatches ? Number(boardSig?.agreement ?? 0) : 0;
   const voters = boardSideMatches ? Number(boardSig?.voters ?? boardSig?.participating ?? 0) : 0;
   if (agree >= 0.78 && voters >= 8) {
@@ -188,6 +208,28 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     !zoneWallVeto &&
     worldAligned8Count >= 6
   );
+
+  // Cross-engine symbol direction lock check (Phase 2.1)
+  const dirResolution = resolveDirection({
+    plan,
+    boardSig,
+    sva: rawSva,
+    council: boardSig?.aiCouncil || boardSig?.aiConfirm || null,
+    mtf6: snap,
+    symbol,
+    dualAligned,
+    worldAligned8Count,
+    trapVeto,
+    zoneWallVeto,
+    reversalRisk,
+  });
+  const lockCheck = symbol && (side === 'LONG' || side === 'SHORT') ? checkDirectionLock(symbol, side) : { allowed: true, conflict: false };
+  const lockOpposes = Boolean(lockCheck && !lockCheck.allowed);
+  if (lockOpposes) {
+    score -= 12;
+    cap = cap == null ? 64 : Math.min(cap, 64);
+    gates.push(`${lockCheck.reason} — capped 64`);
+  }
 
   if (trapVeto) {
     score -= 18;
@@ -217,9 +259,11 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   if (cap != null && score > cap) score = cap;
   const tier = superTier(score);
 
-  // v21.22.0 95% Win-Rate Calibration (8 Institutional Indicators + Dual-TF + Trigger Fired)
+  // v21.22.0 95% Win-Rate Calibration + v21.23.0 Honest Confluence & Ledger-Calibrated P(win)
   const winRatePct = (() => {
-    if (trapVeto || zoneWallVeto) return Math.min(62, Math.max(48, Math.round(45 + score * 0.25)));
+    if (trapVeto || zoneWallVeto || boardOpposes || svaOpposes || councilHardNo || lockOpposes) {
+      return Math.min(62, Math.max(48, Math.round(45 + score * 0.25)));
+    }
     if (worldInd?.estimatedWinRatePct && dualAligned && !reversalRisk) {
       return Math.min(96, Math.max(worldInd.estimatedWinRatePct, score >= 82 ? 95 : score >= 75 ? 92 : 85));
     }
@@ -227,6 +271,8 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     if (dualAligned && !reversalRisk && score >= 75) return 92;
     return Math.min(90, Math.max(52, Math.round(50 + score * 0.44)));
   })();
+  const heuristicConfluencePct = Number(plan?.heuristicConfluencePct ?? worldInd?.confluencePct ?? Math.round((worldAligned8Count / 8) * 100));
+  const pWinCalibrated = (wp && wp.calibrated && Number.isFinite(Number(wp.pWin))) ? Number(wp.pWin) : null;
 
   const ollamaTrio = evaluateMtfRowWithOllamaTrio({
     symbol,
@@ -236,6 +282,7 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     worldAlignedCount,
     worldAligned8Count,
     estimatedWinRatePct: winRatePct,
+    heuristicConfluencePct,
     aligned: dualAligned,
     triggerFired: !!plan?.triggerFired,
     counterTrend: !!plan?.counterTrend,
@@ -243,6 +290,9 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     opposingFlow: !!plan?.trigger?.opposingFlow,
     trapVeto,
     zoneWallVeto,
+    boardSideConflict: boardOpposes,
+    svaConflict: svaOpposes,
+    councilConflict: councilHardNo,
     netRR_T2: plan?.plan?.netRR?.t2 ?? 1.5,
   });
 
@@ -254,6 +304,10 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   if (!plan?.triggerFired) blockers.push('trigger fire pending');
   if (fit !== 'GOOD' && fit !== 'OK') blockers.push(`TF-fit ${fit || 'unknown'} (GOOD/OK chahiye)`);
   if (plan?.counterTrend) blockers.push('counter-trend');
+  if (boardOpposes) blockers.push(`board ensemble side ${boardSideRaw} ≠ MTF side ${side} (direction conflict)`);
+  if (svaOpposes) blockers.push('SVA verifier says FLIP / opposite side');
+  if (councilHardNo) blockers.push(`AI council ${rawCouncilV} (hard disagree)`);
+  if (lockOpposes && lockCheck.reason) blockers.push(lockCheck.reason);
   if (trapVeto) blockers.push('liquidity sweep / trap veto active');
   if (zoneWallVeto) blockers.push('fresh supply/demand zone wall veto');
   if (!directionVerified) blockers.push('direction not pakka verified');
@@ -283,14 +337,27 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     { id: 'priceAction', label: '8. Price Action (HH-HL / Candles)', aligned: !reversalRisk && dualAligned },
   ];
 
+  const finalDirectionVerified = Boolean(directionVerified && !boardOpposes && !svaOpposes && !councilHardNo && !lockOpposes);
+
   return {
     symbol, market, mode: modeId,
     superScore: score, tier,
+    scoreBand: tier,
     winRatePct,
-    directionVerified,
-    pakkaDirectionLabel: directionVerified && (side === 'LONG' || side === 'SHORT') ? `PAKKA ${side}` : (side ? `WAIT-${side}` : 'NEUTRAL'),
+    heuristicConfluencePct,
+    pWinCalibrated,
+    directionVerified: finalDirectionVerified,
+    boardSideConflict: boardOpposes,
+    boardSide: boardSideRaw || null,
+    svaConflict: svaOpposes,
+    councilConflict: councilHardNo,
+    directionResolution: dirResolution,
+    pakkaDirectionLabel: finalDirectionVerified && (side === 'LONG' || side === 'SHORT')
+      ? `PAKKA ${side}`
+      : (side ? (boardOpposes || svaOpposes || councilHardNo || lockOpposes ? `CONFLICT-${side}` : `WAIT-${side}`) : 'NEUTRAL'),
     trapVeto,
     zoneWallVeto,
+    worldIndicatorsMeasured: Boolean(worldInd),
     worldIndicators: worldInd || {
       alignedCount: worldAligned8Count,
       totalCount: 8,
@@ -298,10 +365,10 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
       total8Count: 8,
       confluencePct: Math.round((worldAligned8Count / 8) * 100),
       estimatedWinRatePct: winRatePct,
-      directionVerified,
+      directionVerified: finalDirectionVerified,
       trapVeto,
       zoneWallVeto,
-      highAccuracy95Ready: winRatePct >= 93 && dualAligned && !!plan?.triggerFired && !trapVeto && !zoneWallVeto,
+      highAccuracy95Ready: winRatePct >= 93 && dualAligned && !!plan?.triggerFired && !trapVeto && !zoneWallVeto && finalDirectionVerified,
       institutional8: defaultInst8,
     },
     ollamaTrio,
@@ -424,27 +491,10 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
     ltp: effectiveLiveLtp > 0 ? effectiveLiveLtp : undefined,
     ctxCandles, trigCandles,
   });
-  let snapAligned = snap;
-  if (!snapAligned && plan?.ok && (plan.side === 'LONG' || plan.side === 'SHORT')) {
-    const c = plan.context;
-    const refPx = Number(c?.close ?? plan.ltp ?? 0);
-    const e50 = Number(c?.ema50 ?? 0);
-    const e200 = Number(c?.ema200 ?? 0);
-    if (refPx > 0 && e50 > 0) {
-      const bullHtf = (c?.dir === 1 && (refPx >= (c?.ema20 || 0) || c?.supertrend === 'up'))
-        || (refPx > e50 && (e200 <= 0 || e50 >= e200 * 0.996 || refPx > e200));
-      const bearHtf = !bullHtf && (
-        (c?.dir === -1 && (refPx <= (c?.ema20 || Infinity) || c?.supertrend === 'down'))
-        || (refPx < e50 && (e200 <= 0 || e50 <= e200 * 1.004 || refPx < e200))
-      );
-      snapAligned = {
-        ok: true,
-        htfBias: bullHtf ? 'BULLISH' : bearHtf ? 'BEARISH' : (c?.dir === 1 ? 'BULLISH' : c?.dir === -1 ? 'BEARISH' : 'MIXED'),
-      };
-    } else {
-      snapAligned = await buildMTFSnapshot(sym, mkt, { side: plan.side, ltp: plan.ltp }).catch(() => null);
-    }
-  }
+  // P1-3 Honest Extended Bias: only use `snap` when real 6-TF / 4h+1d snapshot is supplied;
+  // when absent, `fuseDualTf` redistributes the 0.15 weight across real measured inputs (`wSum < 1`)
+  // instead of fabricating 1d+4h bias from the 15m/1h context candle.
+  const snapAligned = snap?.ok ? snap : null;
   const fuse = fuseDualTf({ symbol: sym, market: mkt, boardSig, plan, snap: snapAligned, modeId: mode.id });
 
   // INR cross-view (display only): USDT/USD price → ₹ equivalent (fx se)
@@ -526,6 +576,7 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
     leverageRule: { below10k: 10, above10k: 5, thresholdINR: 10000, walletDeployPct: 95 },
     signals: {
       board: boardSig ? {
+        side: boardSig.side ?? null,
         aiScore: boardSig.superIntel?.aiScore ?? null, grade: boardSig.grade ?? null, confidence: boardSig.confidence ?? null,
         winProb: (boardSig.superIntel?.winProb && typeof boardSig.superIntel.winProb === 'object') ? {
           verdict: boardSig.superIntel.winProb.verdict ?? null,
@@ -704,6 +755,22 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
   const candidateRows = rankDualRows(rows, minBar);
   const trimmed = candidateRows.slice(0, maxRows);
   const q75 = trimmed.filter(r => r.superScore != null && r.superScore >= Number(minScore));
+
+  // Phase 3 (3.1 / 3.2 / 3.3): Log top-6 scan rows into MTF ledger (deduped 30m),
+  // resolve pending outcomes against live LTPs, and attach 30d MTF Direction Scorecard.
+  const scanQuoteMap = {};
+  for (const r of rows) {
+    if (r?.symbol && Number(r.ltp) > 0) scanQuoteMap[r.symbol] = Number(r.ltp);
+  }
+  for (const [s, px] of livePriceBySym.entries()) {
+    if (px > 0) scanQuoteMap[s] = px;
+  }
+  resolveMtfBoardScanOutcomes({ quotes: scanQuoteMap, now });
+  for (const r of trimmed.slice(0, TOP_DEEP_TREND_LIMIT)) {
+    recordMtfBoardScanRow(r, { now });
+  }
+  const directionScorecard = computeMtfDirectionScorecard({ windowDays: 30, now });
+
   const avgWinRatePct = trimmed.length
     ? Math.round(trimmed.reduce((s, r) => s + (Number(r.winRatePct) || 88), 0) / trimmed.length)
     : 92;
@@ -715,6 +782,7 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
     minScore: Number(minScore) || 75,
     topDeepTrendLimit: TOP_DEEP_TREND_LIMIT,
     scannedCount: rows.length,
+    directionScorecard,
     liveFeed24x7: {
       active: true,
       cadenceMs: BOARD_TTL_MS,

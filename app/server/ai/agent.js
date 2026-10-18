@@ -32,6 +32,7 @@ import { durablePut } from '../mcp/durable.js';
 import { coindcxConnected } from '../mcp/coindcx.js';
 import { getTick } from '../liveFeed.js';
 import { walletLeverageForEquityINR, feeBreakevenFloor } from '../exec/sizing.js';
+import { acquireDirectionLock, checkDirectionLock } from './directionLock.js';
 import { walletSnapshot, executeFuturesSignal, closeFuturesPosition, fetchUsdInr, inrOfUsdt as _inrOfUsdt } from './futures.js';
 import {
   loadConfig, loadJournal, dailyStats as _dailyStats, todayIST,
@@ -1994,6 +1995,11 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
       maybeLogSkip('margin too small', `${isGlobal ? 'global SIM' : 'futures'} margin ${marginUSDT} USDT < ${floorUSDT} — sizing equity ₹${r2(sizingEquityINR)}${cfg.mode !== 'live' ? ' (practice)' : ''} / risk ${riskPct}% too small for this stop`);
       persistState(); return;
     }
+    const crossLock = checkDirectionLock(best.symbol, best.side);
+    if (crossLock && !crossLock.allowed) {
+      maybeLogSkip('cross-engine direction lock', crossLock.reason);
+      persistState(); return;
+    }
     // v10.6: the depth walk runs on the POSITION NOTIONAL in the book's
     // currency (USDT notional × usdInr → INR book; the % is unit-free).
     const notionalINR = qty * best.plan.entry * usdInr;
@@ -2077,6 +2083,7 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
   if (out?.ok) {
     _state.lastEntryAt = Date.now();
     _state.lastEntryPair = pairOfSignal(best);
+    acquireDirectionLock({ symbol: best.symbol, side: best.side, source: 'agent', cooldownMin: cfg.flipReentryBlockMin || 240 });
     const f = out.filled || {};
     const deskTag = best.market === 'GLOBALFUTURES' ? '🌍 Global SIM' : wantFutures ? '⚡ Futures' : '₿ Spot';
     // v10.8: near-miss entries get a journal marker (NEAR_MISS kind —
